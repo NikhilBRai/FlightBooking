@@ -1,0 +1,29 @@
+{
+  "_comment": "All pricing math lives in this file. Engineers own the SpEL runtime + sandbox + BigDecimal precision (ExpressionStrategy); the policy team owns every formula and note here. To change how flights are priced, edit this file and restart — no rebuild, no code review of Java. Notes are SpEL too, so string literals need single quotes.",
+
+  "strategies": [
+    {
+      "name": "base-fare",
+      "type": "expression",
+      "order": 0,
+      "formula": "baseFare",
+      "note": "'base fare'"
+    },
+
+    {
+      "name": "demand-based",
+      "type": "expression",
+      "order": 10,
+      "formula": "currentPrice * (bookedRatio >= 0.90 ? 2.0 : bookedRatio >= 0.75 ? 1.5 : bookedRatio >= 0.50 ? 1.2 : 1.0)",
+      "note":    "bookedRatio >= 0.90 ? '2.0x very high demand (>= 90% booked)' : bookedRatio >= 0.75 ? '1.5x high demand (>= 75% booked)' : bookedRatio >= 0.50 ? '1.2x moderate demand (>= 50% booked)' : '1.0x low demand'"
+    },
+
+    {
+      "name": "time-to-departure",
+      "type": "expression",
+      "order": 20,
+      "formula": "currentPrice * (hoursToDeparture < 3 ? 2.0 : hoursToDeparture < 24 ? 1.5 : hoursToDeparture < 168 ? 1.1 : 1.0)",
+      "note":    "hoursToDeparture < 3 ? '2.0x last-minute (< 3h to departure)' : hoursToDeparture < 24 ? '1.5x same-day (< 24h to departure)' : hoursToDeparture < 168 ? '1.1x within a week' : '1.0x plenty of runway'"
+    }
+  ]
+}

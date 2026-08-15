@@ -1,0 +1,44 @@
+# Test profile — activated by @ActiveProfiles("test") on integration
+# tests. Locks down every knob so a test never accidentally hits Redis,
+# Postgres, the H2 console, or the real DataSeeder. Unit tests that
+# don't bring up a Spring context ignore this file entirely.
+server:
+  port: 0
+
+spring:
+  application:
+    name: flight-booking-test
+  datasource:
+    url: jdbc:h2:mem:flightbooking-test-${random.uuid};DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          time_zone: UTC
+  h2:
+    console:
+      enabled: false
+  # Redis autoconfig is a no-op unless a Redis bean is asked for, and
+  # our RedisSeatLockService is @ConditionalOnProperty=redis. Force
+  # the in-memory backend below so we never even wire the Redis
+  # template.
+
+app:
+  reservation:
+    ttl-minutes: 5
+  seat-lock:
+    backend: inmemory
+  search:
+    min-layover-minutes: 60
+    max-layover-hours: 12
+    max-stops-cap: 3
+    strategy: batched
+  pricing:
+    rules-location: classpath:pricing-rules.json

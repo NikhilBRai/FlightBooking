@@ -1,0 +1,59 @@
+# Local infra for the flight-booking app — Postgres + Redis on their
+# default ports, with data persisted across restarts. The app itself is
+# NOT in here on purpose: it's more useful to run the JVM outside the
+# container during development (fast reloads, easy debugger attach),
+# and the infra can stay up between app restarts.
+#
+# Usage:
+#   docker compose up -d           # start both, detached
+#   docker compose logs -f         # tail combined logs
+#   docker compose ps              # health / port summary
+#   docker compose down            # stop + remove containers (KEEPS volumes)
+#   docker compose down -v         # nuke volumes too (fresh DB / Redis)
+#
+# After `docker compose up -d`, boot the app against both:
+#   SPRING_PROFILES_ACTIVE=postgres \
+#   SEAT_LOCK_BACKEND=redis \
+#       java -jar target/flight-booking-0.0.1-SNAPSHOT.jar
+#
+# Compose v2+; no top-level `version:` key required (deprecated in v2).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flightbooking-pg
+    restart: unless-stopped
+    ports:
+      # Bind to 127.0.0.1 so the port isn't exposed on the LAN.
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: flightbooking
+      POSTGRES_USER: flightbooking
+      POSTGRES_PASSWORD: flightbooking
+    volumes:
+      - flightbooking-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightbooking -d flightbooking"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: flightbooking-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    # `--save 60 1` = snapshot to disk if at least 1 key changed in
+    # the last 60s. Enough for local dev; production would use AOF.
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - flightbooking-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  flightbooking-pg-data:
+  flightbooking-redis-data:

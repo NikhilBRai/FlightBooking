@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.4</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.flightbooking</groupId>
+    <artifactId>flight-booking</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>flight-booking</name>
+    <description>Flight booking system - monolith, DB/Redis swappable</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <!-- Newer Lombok that supports modern JDKs (26+). Overrides the version
+             transitively pulled in by spring-boot-dependencies. -->
+        <lombok.version>1.18.46</lombok.version>
+        <!-- Same story for ByteBuddy: Mockito uses it to build inline mocks, and
+             the version pulled transitively by Spring Boot 3.3 predates JDK 26.
+             Bump so class-file version parsing doesn't blow up on our test
+             classes. -->
+        <byte-buddy.version>1.15.11</byte-buddy.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Redis is the sole seat-lock backend in production. Autoconfig only
+             tries to connect when the RedisSeatLockService bean is active,
+             which is gated by `app.seat-lock.backend=redis`. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Default datasource: in-memory H2, running in PostgreSQL compat mode
+             so the SQL Hibernate emits looks the same whether the deploy is
+             this dev fallback or real Postgres. Zero external deps for
+             `mvn spring-boot:run`. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Real datasource: PostgreSQL. Activated by the `postgres`
+             Spring profile, which swaps in application-postgres.yml.
+             Both drivers are shipped so the same jar can run either
+             way. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- On JDK 23+, the compiler no longer auto-discovers
+                         annotation processors from the classpath; declare
+                         Lombok explicitly so its javac plugin fires. -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <source>25</source>
+                    <target>25</target>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Tell ByteBuddy to accept the JDK 26 class file version
+                         even though its baked-in table doesn't list it yet
+                         (belt-and-braces with the byte-buddy.version bump above),
+                         and enable the JVM's dynamic agent loading so Mockito's
+                         inline mock maker can attach without a warning. -->
+                    <argLine>-Dnet.bytebuddy.experimental=true -XX:+EnableDynamicAgentLoading</argLine>
+                    <!-- We split fast unit / repository tests from the boot-the-
+                         whole-app integration tests by naming convention: *Test
+                         is a unit or slice test, *IT is a @SpringBootTest.
+                         Both run under surefire so `mvn test` gives you the
+                         full picture in one command; no separate failsafe
+                         config needed for a project this size. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

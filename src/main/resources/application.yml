@@ -1,0 +1,153 @@
+#
+# Single-file application config for the flight-booking service.
+#
+# YAML `---` separators split this into two "documents":
+#   1. Default document (no profile guard) — always active. Sets the
+#      H2 datasource, Redis connection details, and all app-level
+#      knobs. Zero external deps for `mvn spring-boot:run`.
+#   2. `postgres` profile document — merged on top of the defaults
+#      when SPRING_PROFILES_ACTIVE=postgres is set. Only redefines
+#      the datasource + JPA dialect + H2 console flag; everything
+#      else (Redis, app.*, server.*) is inherited.
+#
+# Every connection detail is an env-var placeholder, so you can
+# override without editing the file — see the README's env-var table.
+#
+
+# =====================================================================
+# 1) DEFAULT DOCUMENT — active always, gives you H2 + in-memory locks
+# =====================================================================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: flight-booking
+
+  # H2 in PostgreSQL-compat mode by default — nothing to install to run
+  # the app. To point at a real Postgres on localhost:5432 instead,
+  # activate the `postgres` profile:
+  #   mvn spring-boot:run -Dspring-boot.run.profiles=postgres
+  #   java -jar target/*.jar --spring.profiles.active=postgres
+  #   SPRING_PROFILES_ACTIVE=postgres java -jar target/*.jar
+  datasource:
+    url: jdbc:h2:mem:flightbooking;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  # Used only when app.seat-lock.backend=redis. Ignored otherwise, so
+  # having Redis absent while running with the in-memory backend is fine.
+  # Override any of these via env var without touching the file:
+  #   REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_TIMEOUT
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2s}
+
+app:
+  # Reservation TTL. Applied to the seat:{flightId}:{seatId} Redis lock
+  # only — the priced payload and workflow state now live on the
+  # bookings row itself, so this key is the sole transient thing left
+  # in Redis. Directly controls how long a browser tab can sit on the
+  # checkout page: after this fires, the Redis lock is gone and
+  # confirm() refuses to charge (isHeldBy() returns false) so the
+  # client must reserve again with a fresh idempotency key. The
+  # RESERVED bookings row is not swept — it's harmless (no flight_seats
+  # row) and keeps the reserve-time idempotency short-circuit working
+  # for late duplicate posts.
+  reservation:
+    ttl-minutes: 5
+  # Seat-lock backend. Options: inmemory (single-JVM dev/test), redis
+  # (prod / any multi-JVM). Override via SEAT_LOCK_BACKEND=redis
+  # without editing this file.
+  seat-lock:
+    backend: ${SEAT_LOCK_BACKEND:inmemory}
+  # Layover constraints for one-stop itinerary stitching.
+  # Second leg must depart no sooner than min after leg-1 lands (real transfer time)
+  # and no later than max after (else it stops being a "connection").
+  search:
+    min-layover-minutes: 60
+    max-layover-hours: 12
+    # Hard cap on itinerary depth. maxStops in the request is clamped to this
+    # regardless of what the client sends — protects the DB from a runaway
+    # backward expansion when someone asks for maxStops=99.
+    max-stops-cap: 3
+    # Search strategy picked at boot via @ConditionalOnProperty:
+    #   batched   — one spine query + one pool query; recursion is in-memory
+    #               against a hub-indexed map. Two DB round-trips per search
+    #               regardless of graph shape. (default)
+    #   recursive — original impl. One query per recursion node. Kept as a
+    #               fallback for benchmarking against `batched`.
+    # Override without editing this file:  SEARCH_STRATEGY=recursive
+    strategy: ${SEARCH_STRATEGY:batched}
+  # Dynamic pricing rules. The referenced file is owned by the pricing/policy
+  # team; PricingRulesLoader parses it at boot and builds the strategy chain.
+  # Point at classpath: for a baked-in default, or file:/ for a mounted
+  # ConfigMap / external policy drop.
+  pricing:
+    rules-location: classpath:pricing-rules.json
+
+# =====================================================================
+# 2) `postgres` PROFILE DOCUMENT — active only when the profile is set.
+#    Merged over the defaults above, so it only needs to redefine what
+#    actually differs (datasource, dialect, H2 console flag).
+# =====================================================================
+---
+spring:
+  config:
+    activate:
+      on-profile: postgres
+
+  # Env-var overridable so the same jar can point at localhost during
+  # dev and at a real cluster in prod without editing this file.
+  #   DB_URL, DB_USERNAME, DB_PASSWORD, DB_POOL_MAX, DB_POOL_MIN, JPA_DDL
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/flightbooking}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:flightbooking}
+    password: ${DB_PASSWORD:flightbooking}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: ${DB_POOL_MIN:2}
+
+  # Turn OFF the H2 console — it panics without an H2 driver on the URL.
+  h2:
+    console:
+      enabled: false
+
+  jpa:
+    # `update` is fine for local dev / demos — Hibernate diffs entity
+    # classes against the live schema and issues ALTERs. In production
+    # this should be `validate` and schema changes should be driven by
+    # Flyway / Liquibase migrations, not Hibernate. Flip to `validate`
+    # via `JPA_DDL=validate` once a migration tool is wired in.
+    hibernate:
+      ddl-auto: ${JPA_DDL:update}
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+# When the postgres profile is active we assume a prod-like deployment,
+# so the seat-lock backend defaults to redis (Postgres implies you also
+# ran `docker compose up -d`, which starts Redis alongside). Still
+# overridable via SEAT_LOCK_BACKEND=inmemory if you want to run the
+# app against a real DB but keep the JVM-local lock.
+app:
+  seat-lock:
+    backend: ${SEAT_LOCK_BACKEND:redis}

@@ -86,6 +86,14 @@ app:
   search:
     min-layover-minutes: 60
     max-layover-hours: 12
+    # Conservative upper bound on any single flight's scheduled duration.
+    # Only used by the batched strategy to widen the pool-query lower bound
+    # so multi-stop itineraries with long intermediate flights aren't
+    # silently dropped. The longest scheduled commercial flight today is
+    # ~19h (SIN↔JFK); 24h leaves comfortable headroom. Raise it only if
+    # you ever seat routes longer than 24h — the cost is a slightly wider
+    # pool fetch.
+    max-flight-hours: 24
     # Hard cap on itinerary depth. maxStops in the request is clamped to this
     # regardless of what the client sends — protects the DB from a runaway
     # backward expansion when someone asks for maxStops=99.

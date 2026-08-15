@@ -3,11 +3,8 @@ package com.flightbooking.service;
 import com.flightbooking.domain.entity.Flight;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.entity.WaitlistEntry;
-import com.flightbooking.domain.enums.BookingStatus;
-import com.flightbooking.exception.InvalidBookingStateException;
 import com.flightbooking.exception.ResourceNotFoundException;
 import com.flightbooking.repository.FlightRepository;
-import com.flightbooking.repository.ItineraryRepository;
 import com.flightbooking.repository.UserRepository;
 import com.flightbooking.repository.WaitlistRepository;
 import lombok.RequiredArgsConstructor;
@@ -16,7 +13,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 
@@ -36,12 +32,7 @@ public class WaitlistService {
     private final WaitlistRepository waitlistRepository;
     private final FlightRepository flightRepository;
     private final UserRepository userRepository;
-    private final ItineraryRepository itineraryRepository;
     private final NotificationService notificationService;
-
-    /** Statuses that count as an "active" itinerary leg, i.e. no need to waitlist. */
-    private static final EnumSet<BookingStatus> ACTIVE_ITINERARY_STATUSES =
-            EnumSet.of(BookingStatus.RESERVED, BookingStatus.CONFIRMED);
 
     /**
      * Join {@code flightId}'s waitlist as {@code userId}. Idempotent
@@ -49,10 +40,13 @@ public class WaitlistService {
      * row rather than 409, so a client that lost the response to the
      * first attempt can safely retry.
      *
-     * <p>Refused with {@code 409} if the user already has an active
-     * ({@link BookingStatus#RESERVED} or {@link BookingStatus#CONFIRMED})
-     * booking on this flight — a seat you already hold isn't something
-     * you should be waiting for.</p>
+     * <p>Holding an active booking on this flight does <b>not</b>
+     * disqualify a user from also being on the waitlist. Since
+     * {@code reserve} already lets one user hold multiple seats on
+     * the same flight (family / group travel), the symmetric rule for
+     * the waitlist is "notify me when another seat opens." Users who
+     * don't want that can leave the waitlist explicitly via
+     * {@link #removeFromWaitlist}.</p>
      */
     @Transactional
     public WaitlistEntry addToWaitlist(Long userId, Long flightId) {
@@ -60,12 +54,6 @@ public class WaitlistService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         Flight flight = flightRepository.findById(flightId)
                 .orElseThrow(() -> new ResourceNotFoundException("Flight not found: " + flightId));
-
-        if (itineraryRepository.existsActiveLegForUserOnFlight(
-                userId, flightId, ACTIVE_ITINERARY_STATUSES)) {
-            throw new InvalidBookingStateException(
-                    "You already have an active booking on this flight");
-        }
 
         Optional<WaitlistEntry> existing =
                 waitlistRepository.findByFlight_IdAndUser_Id(flightId, userId);

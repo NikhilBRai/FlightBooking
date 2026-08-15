@@ -1,12 +1,10 @@
 package com.flightbooking.repository;
 
 import com.flightbooking.domain.entity.Itinerary;
-import com.flightbooking.domain.enums.BookingStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-import java.util.Collection;
 import java.util.Optional;
 
 public interface ItineraryRepository extends JpaRepository<Itinerary, Long> {
@@ -18,30 +16,6 @@ public interface ItineraryRepository extends JpaRepository<Itinerary, Long> {
      * itinerary instead of writing a fresh row set + Redis locks.
      */
     Optional<Itinerary> findByIdempotencyKey(String idempotencyKey);
-
-    /**
-     * Does {@code userId} have any itinerary that includes a leg on
-     * {@code flightId} whose status is in {@code statuses}? Powers
-     * the waitlist join guard — a user with an active
-     * ({@code RESERVED} or {@code CONFIRMED}) leg on a flight
-     * shouldn't also be on that flight's waitlist because there's
-     * nothing to wait for.
-     *
-     * <p>Written as an explicit {@code EXISTS} rather than a derived
-     * query so the join direction (itineraries → bookings) is
-     * unambiguous and the SQL plan is easy to read.</p>
-     */
-    @Query("""
-        SELECT CASE WHEN COUNT(i) > 0 THEN true ELSE false END
-          FROM Itinerary i
-          JOIN i.legs b
-         WHERE i.user.id = :userId
-           AND b.flight.id = :flightId
-           AND i.status IN :statuses
-        """)
-    boolean existsActiveLegForUserOnFlight(@Param("userId") Long userId,
-                                           @Param("flightId") Long flightId,
-                                           @Param("statuses") Collection<BookingStatus> statuses);
 
     /**
      * Loads an itinerary together with every association the booking

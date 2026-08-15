@@ -33,12 +33,24 @@ import java.util.Optional;
  *
  * <p>All three exclude {@code fullyBooked = true} — search never surfaces a
  * segment the user couldn't actually book.</p>
+ *
+ * <p>Every search-time query {@code JOIN FETCH}es {@code flightModel}
+ * because both downstream steps — {@code FlightPricingService.quoteForAll}
+ * (reads {@code totalSeats}) and {@code FlightService.toSummary} (reads
+ * {@code make}) — dereference the association per unique flight. Without
+ * the fetch, each returned flight triggers one extra {@code SELECT} on
+ * {@code flight_models} at pricing/DTO-mapping time, turning "two DB
+ * round-trips per search" into two + N. The join is cheap because
+ * {@code flight_model_id} is {@code NOT NULL} (INNER JOIN drops no rows)
+ * and {@code ManyToOne} fetches don't multiply rows (no {@code DISTINCT}
+ * needed).</p>
  */
 public interface FlightRepository extends JpaRepository<Flight, Long> {
 
     @Query("""
         SELECT f
           FROM Flight f
+          JOIN FETCH f.flightModel
          WHERE f.destination = :destination
            AND f.startTime >= :windowStart
            AND f.startTime <  :windowEnd
@@ -57,6 +69,7 @@ public interface FlightRepository extends JpaRepository<Flight, Long> {
     @Query("""
         SELECT f
           FROM Flight f
+          JOIN FETCH f.flightModel
          WHERE f.destination = :hub
            AND f.endTime >= :earliestLanding
            AND f.endTime <= :latestLanding
@@ -74,6 +87,7 @@ public interface FlightRepository extends JpaRepository<Flight, Long> {
     @Query("""
         SELECT f
           FROM Flight f
+          JOIN FETCH f.flightModel
          WHERE f.source = :userSource
            AND f.destination = :hub
            AND f.endTime >= :earliestLanding
@@ -88,24 +102,31 @@ public interface FlightRepository extends JpaRepository<Flight, Long> {
     /**
      * The whole candidate <b>pool</b> for a batched search strategy —
      * every flight (any source, any destination) whose landing time
-     * falls in {@code [earliestLanding, latestLanding)} and that is
-     * not fully booked. The batched strategy calls this exactly once
-     * per user search, then bucketises the result by destination
-     * airport and drives the entire backward expansion off the map,
-     * so no further DB round-trips are needed regardless of how many
-     * hubs or hops the recursion visits.
+     * falls in the closed interval {@code [earliestLanding, latestLanding]}
+     * and that is not fully booked. The batched strategy calls this
+     * exactly once per user search, then bucketises the result by
+     * destination airport and drives the entire backward expansion
+     * off the map, so no further DB round-trips are needed regardless
+     * of how many hubs or hops the recursion visits.
      *
-     * <p>{@code latestLanding} is exclusive on purpose: it lines up
-     * with the exclusive {@code windowEnd} used for the spine query
-     * ({@code date + 1 day}), so the two together cover every
-     * flight that could belong to an itinerary departing on
-     * {@code date}.</p>
+     * <p><b>Both bounds are inclusive</b>: a feeder landing exactly at
+     * {@code earliestLanding} could still chain into a spine via
+     * back-to-back max-length layovers, and a feeder landing exactly
+     * at {@code latestLanding} can still feed the latest spine at
+     * exactly {@code minLayover} before its departure. Matches the
+     * per-path filter in {@code BatchedFlightSearchStrategy}, which
+     * uses {@code isAfter}/{@code isBefore} (strict {@code >}/{@code <}).</p>
+     *
+     * <p>Unlike the other three, this query has no destination filter,
+     * so the destination-prefixed indexes on {@code flights} don't
+     * help. {@code idx_flights_end_time} on the entity backs it.</p>
      */
     @Query("""
         SELECT f
           FROM Flight f
+          JOIN FETCH f.flightModel
          WHERE f.endTime >= :earliestLanding
-           AND f.endTime <  :latestLanding
+           AND f.endTime <= :latestLanding
            AND f.fullyBooked = false
         """)
     List<Flight> findAllLandingInWindow(@Param("earliestLanding") Instant earliestLanding,

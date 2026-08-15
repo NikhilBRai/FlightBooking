@@ -14,7 +14,11 @@ import java.time.Instant;
         // Inbound spine query: destination=userDest, startTime range.
         @Index(name = "idx_flights_dest_start", columnList = "destination,start_time"),
         // Intermediate-hop landing query: destination=hub, endTime range (source unknown).
-        @Index(name = "idx_flights_dest_end", columnList = "destination,end_time")
+        @Index(name = "idx_flights_dest_end", columnList = "destination,end_time"),
+        // Batched-strategy pool query (findAllLandingInWindow): endTime range with NO
+        // destination filter, so the destination-prefixed indexes above don't help.
+        // Solo leading column on end_time backs it.
+        @Index(name = "idx_flights_end_time", columnList = "end_time")
 })
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor @Builder

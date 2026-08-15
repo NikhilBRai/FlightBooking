@@ -153,11 +153,17 @@ class FlightRepositoryTest {
     }
 
     @Test
-    void findAllLandingInWindow_latestLandingIsExclusive() {
+    void findAllLandingInWindow_latestLandingIsInclusive() {
+        // Query semantic is [earliestLanding, latestLanding] — both
+        // sides closed — so a flight landing exactly at latestLanding
+        // is included. Matches the per-path filter in
+        // BatchedFlightSearchStrategy, which uses isAfter/isBefore
+        // (strict > / <), so a feeder landing exactly at
+        // maxSpineStart - minLayover is still a valid candidate.
         Flight boundary = direct("BLR", "HYD", 10, 60, false); // lands exactly at latest
         Instant latest = T0.plus(Duration.ofHours(11));
         List<Flight> out = flightRepository.findAllLandingInWindow(T0, latest);
-        assertThat(out).extracting(Flight::getId).doesNotContain(boundary.getId());
+        assertThat(out).extracting(Flight::getId).contains(boundary.getId());
     }
 
     // ---- findByIdWithFlightModel --------------------------------------
@@ -183,5 +189,69 @@ class FlightRepositoryTest {
     @Test
     void findByIdWithFlightModel_returnsEmptyForUnknownId() {
         assertThat(flightRepository.findByIdWithFlightModel(999L)).isEmpty();
+    }
+
+    // ---- JOIN FETCH invariants for the search queries -----------------
+    //
+    // Every search-time query is expected to eagerly initialise
+    // f.flightModel; otherwise pricing (needs totalSeats) and DTO
+    // mapping (needs make) each fire one lazy SELECT per unique flight,
+    // and the "two round-trips per search" contract silently becomes
+    // 2 + N. These tests clear the persistence context so a plain
+    // findXxx() would return an uninitialised proxy.
+
+    @Test
+    void findInboundInWindow_eagerlyInitialisesFlightModel() {
+        direct("BLR", "BOM", 8, 120, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findInboundInWindow(
+                "BOM", T0, T0.plus(Duration.ofDays(1)));
+
+        assertThat(out).hasSize(1);
+        assertThat(Hibernate.isInitialized(out.get(0).getFlightModel())).isTrue();
+    }
+
+    @Test
+    void findLandingAtHubInWindow_eagerlyInitialisesFlightModel() {
+        direct("BLR", "HYD", 8, 60, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findLandingAtHubInWindow(
+                "HYD",
+                T0.plus(Duration.ofHours(8).plusMinutes(30)),
+                T0.plus(Duration.ofHours(11)));
+
+        assertThat(out).hasSize(1);
+        assertThat(Hibernate.isInitialized(out.get(0).getFlightModel())).isTrue();
+    }
+
+    @Test
+    void findFeederLegs_eagerlyInitialisesFlightModel() {
+        direct("BLR", "HYD", 8, 60, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findFeederLegs(
+                "BLR", "HYD",
+                T0.plus(Duration.ofHours(8).plusMinutes(30)),
+                T0.plus(Duration.ofHours(11)));
+
+        assertThat(out).hasSize(1);
+        assertThat(Hibernate.isInitialized(out.get(0).getFlightModel())).isTrue();
+    }
+
+    @Test
+    void findAllLandingInWindow_eagerlyInitialisesFlightModel() {
+        direct("BLR", "HYD", 8, 60, false);
+        direct("MAA", "HYD", 8, 60, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findAllLandingInWindow(
+                T0.plus(Duration.ofHours(8).plusMinutes(30)),
+                T0.plus(Duration.ofHours(11)));
+
+        assertThat(out).hasSize(2);
+        assertThat(out).allSatisfy(
+                f -> assertThat(Hibernate.isInitialized(f.getFlightModel())).isTrue());
     }
 }

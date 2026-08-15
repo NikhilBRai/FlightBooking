@@ -4,11 +4,8 @@ import com.flightbooking.domain.entity.Flight;
 import com.flightbooking.domain.entity.FlightModel;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.entity.WaitlistEntry;
-import com.flightbooking.domain.enums.BookingStatus;
-import com.flightbooking.exception.InvalidBookingStateException;
 import com.flightbooking.exception.ResourceNotFoundException;
 import com.flightbooking.repository.FlightRepository;
-import com.flightbooking.repository.ItineraryRepository;
 import com.flightbooking.repository.UserRepository;
 import com.flightbooking.repository.WaitlistRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,7 +36,6 @@ class WaitlistServiceTest {
     @Mock WaitlistRepository waitlistRepository;
     @Mock FlightRepository flightRepository;
     @Mock UserRepository userRepository;
-    @Mock ItineraryRepository itineraryRepository;
     @Mock NotificationService notificationService;
 
     @InjectMocks WaitlistService svc;
@@ -65,7 +61,6 @@ class WaitlistServiceTest {
     void addToWaitlist_persistsNewEntryWhenAllChecksPass() {
         when(userRepository.findById(1L)).thenReturn(Optional.of(alice));
         when(flightRepository.findById(10L)).thenReturn(Optional.of(flight));
-        when(itineraryRepository.existsActiveLegForUserOnFlight(eq(1L), eq(10L), any())).thenReturn(false);
         when(waitlistRepository.findByFlight_IdAndUser_Id(10L, 1L)).thenReturn(Optional.empty());
         when(waitlistRepository.save(any(WaitlistEntry.class))).thenAnswer(inv -> {
             WaitlistEntry e = inv.getArgument(0);
@@ -89,7 +84,6 @@ class WaitlistServiceTest {
                 .addedAt(Instant.parse("2030-01-01T00:00:00Z")).build();
         when(userRepository.findById(1L)).thenReturn(Optional.of(alice));
         when(flightRepository.findById(10L)).thenReturn(Optional.of(flight));
-        when(itineraryRepository.existsActiveLegForUserOnFlight(any(), any(), any())).thenReturn(false);
         when(waitlistRepository.findByFlight_IdAndUser_Id(10L, 1L)).thenReturn(Optional.of(existing));
 
         WaitlistEntry out = svc.addToWaitlist(1L, 10L);
@@ -99,22 +93,31 @@ class WaitlistServiceTest {
     }
 
     @Test
-    void addToWaitlist_activeBookingBlocksJoinWithConflict() {
+    void addToWaitlist_holdingActiveBookingDoesNotBlockJoin() {
+        // Policy: holding a seat on this flight is not a disqualifier
+        // for the waitlist. reserve() already allows the same user to
+        // hold multiple seats on one flight (family / group travel);
+        // the symmetric rule for the waitlist is "notify me when
+        // another seat opens". The only per-user+per-flight guard
+        // that stays is the idempotency check on the waitlist row
+        // itself, exercised in addToWaitlist_isIdempotent_...
+        //
+        // This test locks that policy in — the service must not call
+        // any active-booking-detection query and must save the entry
+        // regardless of any pre-existing booking the user has.
         when(userRepository.findById(1L)).thenReturn(Optional.of(alice));
         when(flightRepository.findById(10L)).thenReturn(Optional.of(flight));
-        when(itineraryRepository.existsActiveLegForUserOnFlight(
-                eq(1L), eq(10L),
-                org.mockito.ArgumentMatchers.argThat(coll ->
-                        coll != null
-                                && coll.contains(BookingStatus.RESERVED)
-                                && coll.contains(BookingStatus.CONFIRMED)
-                                && coll.size() == 2)))
-                .thenReturn(true);
+        when(waitlistRepository.findByFlight_IdAndUser_Id(10L, 1L)).thenReturn(Optional.empty());
+        when(waitlistRepository.save(any(WaitlistEntry.class))).thenAnswer(inv -> {
+            WaitlistEntry e = inv.getArgument(0);
+            e.setId(777L);
+            return e;
+        });
 
-        assertThatExceptionOfType(InvalidBookingStateException.class)
-                .isThrownBy(() -> svc.addToWaitlist(1L, 10L))
-                .withMessageContaining("active booking");
-        verify(waitlistRepository, never()).save(any(WaitlistEntry.class));
+        WaitlistEntry out = svc.addToWaitlist(1L, 10L);
+
+        assertThat(out.getId()).isEqualTo(777L);
+        verify(waitlistRepository, times(1)).save(any(WaitlistEntry.class));
     }
 
     @Test

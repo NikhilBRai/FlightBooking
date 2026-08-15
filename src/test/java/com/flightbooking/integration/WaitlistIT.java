@@ -32,7 +32,6 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -109,15 +108,18 @@ class WaitlistIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("user with an active itinerary leg on the flight can't join the waitlist")
-    void activeBookerCannotJoin() throws Exception {
+    @DisplayName("user with an active itinerary leg on the flight can still join the waitlist (policy: symmetric with reserve, which allows the same user to hold multiple seats)")
+    void activeBookerCanStillJoin() throws Exception {
         String idem = UUID.randomUUID().toString();
         reserveAndConfirm(bob, idem, seat.getId());
 
         mvc.perform(post("/flights/" + flight.getId() + "/waitlist")
                         .header(ItineraryController.USER_ID_HEADER, bob.getId()))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("active booking")));
+                .andExpect(status().isOk());
+
+        assertThat(waitlistRepository.findAll())
+                .extracting(w -> w.getUser().getId())
+                .contains(bob.getId());
     }
 
     @Test

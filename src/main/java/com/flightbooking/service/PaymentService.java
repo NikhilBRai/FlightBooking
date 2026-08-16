@@ -2,6 +2,7 @@ package com.flightbooking.service;
 
 import com.flightbooking.domain.entity.Itinerary;
 import com.flightbooking.domain.entity.Payment;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.domain.enums.PaymentStatus;
 import com.flightbooking.domain.enums.PaymentType;
 import com.flightbooking.exception.PaymentFailedException;
@@ -60,7 +61,7 @@ public class PaymentService {
      * the same key on retry deduplicates on the gateway side too.</p>
      */
     @Transactional
-    public Payment charge(Itinerary itinerary, BigDecimal amount, String method, String idempotencyKey) {
+    public Payment charge(Itinerary itinerary, BigDecimal amount, PaymentMethod method, String idempotencyKey) {
         return paymentRepository.findByIdempotencyKey(idempotencyKey)
                 .map(existing -> {
                     log.info("Payment idempotency hit for key={} itineraryId={} paymentId={}",

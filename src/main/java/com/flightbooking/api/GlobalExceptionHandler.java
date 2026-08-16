@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -89,6 +90,28 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> handleBadRequest(IllegalArgumentException ex, HttpServletRequest req) {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), req);
+    }
+
+    /**
+     * Body couldn't be parsed as the target DTO — malformed JSON,
+     * unknown enum value ({@code paymentMethod: "monopoly-money"}),
+     * type mismatch inside a field, missing body, etc. Every case
+     * here is caller-supplied garbage, not a server crash, so 400
+     * is the right response. Without this handler the exception
+     * falls through to the generic {@link Exception} branch below
+     * and surfaces as a misleading 500.
+     *
+     * <p>We intentionally do NOT echo {@code ex.getMessage()} —
+     * Jackson's error message can leak internal field names and
+     * partial class paths. A stable, non-leaky message is enough
+     * for the client to know they sent bad JSON; the server logs
+     * still capture the details.</p>
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(
+            HttpMessageNotReadableException ex, HttpServletRequest req) {
+        return build(HttpStatus.BAD_REQUEST,
+                "Malformed request body (invalid JSON or unsupported field value)", req);
     }
 
     @ExceptionHandler(Exception.class)

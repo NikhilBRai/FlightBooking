@@ -5,6 +5,7 @@ import com.flightbooking.domain.entity.Itinerary;
 import com.flightbooking.domain.entity.Payment;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.enums.BookingStatus;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.domain.enums.PaymentType;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,7 +61,7 @@ class PaymentRepositoryTest {
                 .itinerary(itinerary).type(PaymentType.CHARGE)
                 .status(com.flightbooking.domain.enums.PaymentStatus.SUCCESS)
                 .idempotencyKey("dup").transactionId("txn_b")
-                .amount(new BigDecimal("500")).paymentMethod("card")
+                .amount(new BigDecimal("500")).paymentMethod(PaymentMethod.CARD)
                 .createdAt(Instant.now()).build();
 
         Throwable t = org.assertj.core.api.Assertions.catchThrowable(() -> {

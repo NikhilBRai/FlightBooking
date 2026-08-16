@@ -117,6 +117,90 @@ class SeatRepositoryTest {
         assertThat(seatRepository.findSeatOccupancy(blrBom.getId(), 999L)).isEmpty();
     }
 
+    // ---- findSeatOccupancyForFlights (bulk) --------------------------
+
+    @Test
+    void bulkOccupancy_returnsOneRowPerSeatPerRequestedFlight() {
+        // s1a booked on blrHyd only. Bulk query for BOTH flights
+        // should surface s1a as booked on blrHyd and unbooked on
+        // blrBom — the LEFT JOIN condition scopes fs to (flight,
+        // seat), so no leakage.
+        fix.flightSeat(blrHyd, s1a);
+
+        List<SeatOccupancyRow> rows = seatRepository.findSeatOccupancyForFlights(
+                List.of(blrBom.getId(), blrHyd.getId()));
+
+        // 2 flights × 3 seats per Boeing model = 6 rows.
+        assertThat(rows).hasSize(6);
+        // Every row carries its flightId so callers can group.
+        assertThat(rows).allSatisfy(r -> assertThat(r.flightId()).isNotNull());
+
+        List<SeatOccupancyRow> forBlrHyd = rows.stream()
+                .filter(r -> r.flightId().equals(blrHyd.getId()))
+                .toList();
+        List<SeatOccupancyRow> forBlrBom = rows.stream()
+                .filter(r -> r.flightId().equals(blrBom.getId()))
+                .toList();
+        assertThat(forBlrHyd).extracting(SeatOccupancyRow::isBooked)
+                .containsExactly(true, false, false); // 1A booked, 1B/2A free
+        assertThat(forBlrBom).extracting(SeatOccupancyRow::isBooked)
+                .containsExactly(false, false, false); // 1A free on this flight
+    }
+
+    @Test
+    void bulkOccupancy_orderedByFlightIdThenSeatNumber() {
+        // Ordering is a query-level guarantee so callers can groupBy
+        // without an extra sort pass.
+        List<SeatOccupancyRow> rows = seatRepository.findSeatOccupancyForFlights(
+                List.of(blrHyd.getId(), blrBom.getId()));
+
+        // Rows for the smaller flight_id land first, and within
+        // each flight the seats come out in seatNumber order
+        // (1A, 1B, 2A).
+        long smallerFlightId = Math.min(blrBom.getId(), blrHyd.getId());
+        assertThat(rows.get(0).flightId()).isEqualTo(smallerFlightId);
+        assertThat(rows.get(2).flightId()).isEqualTo(smallerFlightId);
+        assertThat(rows.subList(0, 3)).extracting(SeatOccupancyRow::seatNumber)
+                .containsExactly("1A", "1B", "2A");
+        assertThat(rows.subList(3, 6)).extracting(SeatOccupancyRow::seatNumber)
+                .containsExactly("1A", "1B", "2A");
+    }
+
+    @Test
+    void bulkOccupancy_unknownFlightIdIsSilentlyOmitted() {
+        // Passing an id that doesn't exist must not blow up — the
+        // query filters via IN, unknown ids simply produce no rows.
+        List<SeatOccupancyRow> rows = seatRepository.findSeatOccupancyForFlights(
+                List.of(blrBom.getId(), 999_999L));
+
+        // Only rows for the known flight surface.
+        assertThat(rows).allSatisfy(
+                r -> assertThat(r.flightId()).isEqualTo(blrBom.getId()));
+        assertThat(rows).hasSize(3);
+    }
+
+    @Test
+    void bulkOccupancy_singletonInputMatchesSingleFlightQuery() {
+        // Sanity check: for a single flight, the bulk shape returns
+        // exactly the same seats (in the same order) as the legacy
+        // single-flight query. The only structural difference is the
+        // extra flightId column, which the single-flight query
+        // leaves null.
+        fix.flightSeat(blrBom, s1b);
+
+        List<SeatOccupancyRow> bulk = seatRepository.findSeatOccupancyForFlights(
+                List.of(blrBom.getId()));
+        List<SeatOccupancyRow> single = seatRepository.findSeatOccupancy(
+                blrBom.getId(), boeing.getId());
+
+        assertThat(bulk).extracting(
+                        SeatOccupancyRow::seatId, SeatOccupancyRow::seatNumber, SeatOccupancyRow::isBooked)
+                .containsExactlyElementsOf(single.stream()
+                        .map(r -> org.assertj.core.groups.Tuple.tuple(
+                                r.seatId(), r.seatNumber(), r.isBooked()))
+                        .toList());
+    }
+
     // ---- findByIdWithFlightModel --------------------------------------
 
     @Test

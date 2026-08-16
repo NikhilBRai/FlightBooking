@@ -3,7 +3,10 @@ package com.flightbooking.repository;
 import com.flightbooking.domain.entity.Flight;
 import com.flightbooking.domain.entity.FlightModel;
 import com.flightbooking.domain.entity.FlightSeat;
+import com.flightbooking.domain.entity.Itinerary;
 import com.flightbooking.domain.entity.Seat;
+import com.flightbooking.domain.entity.User;
+import com.flightbooking.domain.enums.BookingStatus;
 import com.flightbooking.repository.FlightSeatRepository.FlightSeatCount;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -134,6 +137,63 @@ class FlightSeatRepositoryTest {
     @Test
     void findBookedSeatIdsByFlight_emptyForFlightWithNoBookings() {
         assertThat(flightSeatRepository.findBookedSeatIdsByFlight_Id(flightA.getId())).isEmpty();
+    }
+
+    // ---- deleteAllByItinerary_Id (bulk cancel) ------------------------
+
+    @Test
+    void deleteAllByItinerary_removesExactlyTheFlightSeatsMatchingItsLegs() {
+        // Two itineraries share flightA. Only itinerary1's leg rows
+        // should disappear when we cancel itinerary1; itinerary2 must
+        // be untouched. This is exactly the correctness property the
+        // EXISTS-subquery delete guarantees over a naïve "delete by
+        // (flight_id, seat_id) IN (...)" tuple-IN, which could match
+        // other users' bookings.
+        User u1 = fix.user("Alice", "a@e");
+        User u2 = fix.user("Bob", "b@e");
+        Itinerary itin1 = fix.itinerary(u1, BookingStatus.CONFIRMED,
+                "itin1-key", new BigDecimal("6000"));
+        Itinerary itin2 = fix.itinerary(u2, BookingStatus.CONFIRMED,
+                "itin2-key", new BigDecimal("2000"));
+        // itin1 legs: (flightA, seat1) + (flightB, seat2). legOrder
+        // is unique within an itinerary — 0 and 1.
+        // itin2 leg:  (flightA, seat3) — same flight, different seat.
+        fix.booking(itin1, flightA, seat1, 0);
+        fix.booking(itin1, flightB, seat2, 1);
+        fix.booking(itin2, flightA, seat3, 0);
+        fix.flightSeat(flightA, seat1);
+        fix.flightSeat(flightB, seat2);
+        fix.flightSeat(flightA, seat3);
+
+        int removed = flightSeatRepository.deleteAllByItinerary_Id(itin1.getId());
+        em.flush();
+        em.clear();
+
+        assertThat(removed).isEqualTo(2);
+        // itin1's rows are gone; itin2's row (flightA, seat3) is still there.
+        assertThat(flightSeatRepository.existsByFlight_IdAndSeat_Id(flightA.getId(), seat1.getId())).isFalse();
+        assertThat(flightSeatRepository.existsByFlight_IdAndSeat_Id(flightB.getId(), seat2.getId())).isFalse();
+        assertThat(flightSeatRepository.existsByFlight_IdAndSeat_Id(flightA.getId(), seat3.getId())).isTrue();
+    }
+
+    @Test
+    void deleteAllByItinerary_returnsZeroWhenNoLegHasFlightSeatRow() {
+        // Itinerary in RESERVED state (or any state where confirm
+        // never inserted flight_seats). Cancel-side delete must be
+        // a no-op — no rows to remove, no exception.
+        User u = fix.user("Alice", "a@e");
+        Itinerary reserved = fix.itinerary(u, BookingStatus.RESERVED,
+                "unfulfilled", new BigDecimal("3200"));
+        fix.booking(reserved, flightA, seat1, 0);
+
+        int removed = flightSeatRepository.deleteAllByItinerary_Id(reserved.getId());
+        assertThat(removed).isZero();
+    }
+
+    @Test
+    void deleteAllByItinerary_ignoresUnknownItineraryId() {
+        // Sanity: unknown id must not throw, must remove nothing.
+        assertThat(flightSeatRepository.deleteAllByItinerary_Id(999_999L)).isZero();
     }
 
     @Test

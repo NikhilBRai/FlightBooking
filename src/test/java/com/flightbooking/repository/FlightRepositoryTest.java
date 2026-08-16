@@ -191,6 +191,48 @@ class FlightRepositoryTest {
         assertThat(flightRepository.findByIdWithFlightModel(999L)).isEmpty();
     }
 
+    // ---- findAllByIdInWithFlightModel ---------------------------------
+
+    @Test
+    void findAllByIdInWithFlightModel_returnsRequestedFlightsAndOmitsUnknownIds() {
+        Flight a = direct("BLR", "BOM", 8, 120, false);
+        Flight b = direct("BLR", "HYD", 10, 60, false);
+        Flight c = direct("BLR", "DEL", 12, 90, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findAllByIdInWithFlightModel(
+                java.util.List.of(a.getId(), b.getId(), 99999L)); // 99999 is unknown
+
+        // Unknown ids are silently omitted (no exception) — the
+        // caller cross-checks against the requested set to raise
+        // a precise 404 with the missing id.
+        assertThat(out).extracting(Flight::getId)
+                .containsExactlyInAnyOrder(a.getId(), b.getId());
+        assertThat(out).extracting(Flight::getId).doesNotContain(c.getId());
+    }
+
+    @Test
+    void findAllByIdInWithFlightModel_eagerlyInitialisesFlightModel() {
+        Flight a = direct("BLR", "BOM", 8, 120, false);
+        Flight b = direct("BLR", "HYD", 10, 60, false);
+        em.clear();
+
+        List<Flight> out = flightRepository.findAllByIdInWithFlightModel(
+                java.util.List.of(a.getId(), b.getId()));
+
+        // Bulk fetch must eagerly initialise flightModel too —
+        // otherwise pricing (needs totalSeats) fires one lazy
+        // SELECT per unique flight and we're back to N+1.
+        assertThat(out).allSatisfy(f ->
+                assertThat(Hibernate.isInitialized(f.getFlightModel())).isTrue());
+    }
+
+    @Test
+    void findAllByIdInWithFlightModel_emptyInputReturnsEmptyList() {
+        assertThat(flightRepository.findAllByIdInWithFlightModel(java.util.List.of()))
+                .isEmpty();
+    }
+
     // ---- JOIN FETCH invariants for the search queries -----------------
     //
     // Every search-time query is expected to eagerly initialise

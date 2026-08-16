@@ -103,10 +103,21 @@ public class ItineraryController {
         return bookingService.confirm(itineraryId, userId, idempotencyKey, request);
     }
 
-    /** {@code GET /itinerary/{itineraryId}} — view the full itinerary + legs. */
+    /**
+     * {@code GET /itinerary/{itineraryId}} — view the full itinerary + legs.
+     *
+     * <p>Requires the same {@code X-User-Id} header as the mutating
+     * endpoints and enforces the same ownership rule: callers can
+     * only view their own itineraries. A mismatched or missing user
+     * yields the same masked {@code 409 "Reservation not found for
+     * this user"} we return on confirm/cancel, so an attacker
+     * poking at random itinerary IDs can't distinguish "not yours"
+     * from "doesn't exist".</p>
+     */
     @GetMapping("/{itineraryId}")
-    public BookingItineraryDto view(@PathVariable Long itineraryId) {
-        return bookingService.getItinerary(itineraryId);
+    public BookingItineraryDto view(@PathVariable Long itineraryId,
+                                    @RequestHeader(USER_ID_HEADER) Long userId) {
+        return bookingService.getItinerary(itineraryId, userId);
     }
 
     /**

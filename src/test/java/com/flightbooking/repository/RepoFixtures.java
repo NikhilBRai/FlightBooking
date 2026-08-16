@@ -10,6 +10,7 @@ import com.flightbooking.domain.entity.Seat;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.entity.WaitlistEntry;
 import com.flightbooking.domain.enums.BookingStatus;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.domain.enums.PaymentStatus;
 import com.flightbooking.domain.enums.PaymentType;
 import jakarta.persistence.EntityManager;
@@ -116,7 +117,7 @@ final class RepoFixtures {
         Payment p = Payment.builder()
                 .itinerary(itinerary).type(type).status(PaymentStatus.SUCCESS)
                 .idempotencyKey(idempotencyKey).transactionId(txnId)
-                .amount(new BigDecimal("500")).paymentMethod("card")
+                .amount(new BigDecimal("500")).paymentMethod(PaymentMethod.CARD)
                 .createdAt(Instant.now()).build();
         em.persist(p);
         em.flush();

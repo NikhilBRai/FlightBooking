@@ -26,6 +26,37 @@ public interface FlightSeatRepository extends JpaRepository<FlightSeat, Long> {
     long deleteByFlight_IdAndSeat_Id(Long flightId, Long seatId);
 
     /**
+     * Bulk-delete every {@code flight_seats} row that corresponds to a
+     * leg of {@code itineraryId}. Replaces the per-leg
+     * {@link #deleteByFlight_IdAndSeat_Id(Long, Long)} loop that used
+     * to fire N sequential DELETEs during cancel.
+     *
+     * <p>Correlated EXISTS subquery — no JPQL tuple-IN needed, and the
+     * outer DELETE hits the {@code UNIQUE(flight_id, seat_id)} index
+     * so the planner does a nested-loop lookup per booking leg rather
+     * than a table scan. Booking is tiny (<= itinerary's leg cap),
+     * so both sides of the join stay cheap.</p>
+     *
+     * <p>Rows are silently ignored if a leg's {@code flight_seats}
+     * row is missing (e.g. an itinerary that was never confirmed on
+     * that specific leg for whatever reason) — same tolerance as the
+     * per-leg method it replaces.</p>
+     *
+     * @return number of {@code flight_seats} rows actually deleted
+     */
+    @Modifying
+    @Query("""
+        DELETE FROM FlightSeat fs
+         WHERE EXISTS (
+             SELECT 1 FROM Booking b
+              WHERE b.itinerary.id = :itineraryId
+                AND b.flight.id = fs.flight.id
+                AND b.seat.id = fs.seat.id
+         )
+        """)
+    int deleteAllByItinerary_Id(@Param("itineraryId") Long itineraryId);
+
+    /**
      * The id of every booked seat on {@code flightId}, projected to
      * the raw id so the result carries no {@link FlightSeat} row and
      * no join to {@code seats}. Bounded by the aircraft's seat count.

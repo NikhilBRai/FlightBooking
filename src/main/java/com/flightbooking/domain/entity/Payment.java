@@ -1,5 +1,6 @@
 package com.flightbooking.domain.entity;
 
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.domain.enums.PaymentStatus;
 import com.flightbooking.domain.enums.PaymentType;
 import jakarta.persistence.*;
@@ -71,8 +72,9 @@ public class Payment {
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal amount;
 
-    @Column(name = "payment_method", nullable = false)
-    private String paymentMethod;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_method", nullable = false, length = 16)
+    private PaymentMethod paymentMethod;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;

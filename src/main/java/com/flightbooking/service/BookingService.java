@@ -39,6 +39,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Itinerary lifecycle service. An itinerary is the atomic unit: a
@@ -107,9 +109,38 @@ public class BookingService {
     @Value("${app.reservation.ttl-minutes:5}")
     private int reservationTtlMinutes;
 
+    // Same layover bounds as the search strategy uses. Kept in sync
+    // by both reading from the same properties; if you ever move to
+    // @ConfigurationProperties, wire every caller to the same bean.
+    // See assertLegsFormValidItinerary for how these bound a
+    // caller-supplied multi-leg reservation.
+    @Value("${app.search.min-layover-minutes:60}")
+    private long minLayoverMinutes;
+
+    @Value("${app.search.max-layover-hours:12}")
+    private long maxLayoverHours;
+
     /** Deadlock-free lock ordering: by flightId, tiebreak by seatId. */
     private static final Comparator<LegRequest> LOCK_ORDER =
             Comparator.comparing(LegRequest::flightId).thenComparing(LegRequest::seatId);
+
+    /**
+     * Domain-wide rule: no reserve/confirm/cancel operations against
+     * a flight that has already departed. Throws
+     * {@link InvalidBookingStateException} so the API surfaces a
+     * clean {@code 409}. Uses a strict {@code isAfter(now)} check —
+     * a flight whose {@code startTime} equals now (down to the
+     * millisecond) is considered departed. If you ever want a
+     * "no operations within N minutes of departure" cutoff, tighten
+     * this one helper.
+     */
+    private static void assertFlightNotDeparted(Flight flight) {
+        if (!flight.getStartTime().isAfter(Instant.now())) {
+            throw new InvalidBookingStateException(
+                    "Flight " + flight.getId() + " departed at "
+                            + flight.getStartTime() + "; operation not allowed");
+        }
+    }
 
     // ---- Reserve --------------------------------------------------------
 
@@ -162,42 +193,37 @@ public class BookingService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
-        // Load each leg's flight + verify each leg's seat exists on
-        // that flight and isn't already booked, computing per-leg
-        // price along the way. We collect enough intermediate state
-        // to persist the leg without a second round-trip after
-        // locking.
-        List<LegBuild> builds = new ArrayList<>(legs.size());
+
+        Set<Long> flightIds = legs.stream()
+                .map(LegRequest::flightId)
+                .collect(Collectors.toSet());
+        Map<Long, Flight> flightById = flightRepository
+                .findAllByIdInWithFlightModel(flightIds).stream()
+                .collect(Collectors.toMap(Flight::getId, Function.identity()));
+
+        List<Flight> flightsInCallerOrder = new ArrayList<>(legs.size());
         for (LegRequest leg : legs) {
-            Flight flight = flightRepository.findByIdWithFlightModel(leg.flightId())
-                    .orElseThrow(() -> new ResourceNotFoundException(
-                            "Flight not found: " + leg.flightId()));
-
-            List<SeatOccupancyRow> layout = seatRepository.findSeatOccupancy(
-                    leg.flightId(), flight.getFlightModel().getId());
-            SeatOccupancyRow requested = layout.stream()
-                    .filter(row -> Objects.equals(row.seatId(), leg.seatId()))
-                    .findFirst()
-                    .orElseThrow(() -> new ResourceNotFoundException(
-                            "Seat " + leg.seatId() + " does not exist on flight " + leg.flightId()));
-            if (requested.isBooked()) {
-                throw new SeatUnavailableException(
-                        "Seat " + leg.seatId() + " on flight " + leg.flightId() + " is already booked");
+            Flight flight = flightById.get(leg.flightId());
+            if (flight == null) {
+                throw new ResourceNotFoundException("Flight not found: " + leg.flightId());
             }
-            long bookedCount = layout.stream().filter(SeatOccupancyRow::isBooked).count();
-
-            Seat seatRef = seatRepository.getReferenceById(leg.seatId());
-            PriceQuote quote = flightPricingService.quoteFor(flight, bookedCount);
-
-            builds.add(new LegBuild(leg, flight, seatRef, quote));
+            assertFlightNotDeparted(flight);
+            flightsInCallerOrder.add(flight);
         }
 
-        // ---- 3. Acquire seat locks in canonical order ------------------
+        assertLegsFormValidItinerary(flightsInCallerOrder);
+
         Duration ttl = Duration.ofMinutes(reservationTtlMinutes);
         List<LegRequest> sorted = new ArrayList<>(legs);
         sorted.sort(LOCK_ORDER);
         List<LegRequest> acquired = new ArrayList<>(sorted.size());
+        Map<LegRequest, LegBuild> buildByLeg = new HashMap<>(sorted.size());
         try {
+            // ---- 3a. Acquire every seat lock in canonical order --------
+            // No layout query yet — a fetch here would run BEFORE the
+            // remaining locks are held, defeating the "read under lock"
+            // property that eliminated the classic read-then-lock race.
+            // Locks first, layouts after.
             for (LegRequest leg : sorted) {
                 if (!seatLockService.tryLock(leg.flightId(), leg.seatId(), idempotencyKey, ttl)) {
                     throw new SeatUnavailableException(
@@ -206,6 +232,43 @@ public class BookingService {
                 }
                 acquired.add(leg);
             }
+
+            Set<Long> uniqueFlightIds = flightsInCallerOrder.stream()
+                    .map(Flight::getId)
+                    .collect(Collectors.toSet());
+            Map<Long, List<SeatOccupancyRow>> layoutByFlightId =
+                    seatRepository.findSeatOccupancyForFlights(uniqueFlightIds).stream()
+                            .collect(Collectors.groupingBy(SeatOccupancyRow::flightId));
+
+            // ---- 3c. Per-leg validation + price in canonical order -----
+            for (LegRequest leg : sorted) {
+                Flight flight = flightsInCallerOrder.get(legs.indexOf(leg));
+
+                List<SeatOccupancyRow> layout = layoutByFlightId.getOrDefault(
+                        leg.flightId(), List.of());
+                SeatOccupancyRow requested = layout.stream()
+                        .filter(row -> Objects.equals(row.seatId(), leg.seatId()))
+                        .findFirst()
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Seat " + leg.seatId() + " does not exist on flight " + leg.flightId()));
+                if (requested.isBooked()) {
+                    throw new SeatUnavailableException(
+                            "Seat " + leg.seatId() + " on flight " + leg.flightId() + " is already booked");
+                }
+                long bookedCount = layout.stream().filter(SeatOccupancyRow::isBooked).count();
+
+                Seat seatRef = seatRepository.getReferenceById(leg.seatId());
+                PriceQuote quote = flightPricingService.quoteFor(flight, bookedCount);
+
+                buildByLeg.put(leg, new LegBuild(leg, flight, seatRef, quote));
+            }
+
+            // Restore caller order for persistence — leg 0 must
+            // stay the leg the client sent first, regardless of
+            // the canonical order we processed above.
+            List<LegBuild> builds = legs.stream()
+                    .map(buildByLeg::get)
+                    .toList();
 
             // ---- 4. Persist itinerary + legs in caller order -----------
             Instant now = Instant.now();
@@ -222,18 +285,18 @@ public class BookingService {
                     .finalPrice(total)
                     .build());
 
-            List<Booking> persistedLegs = new ArrayList<>(builds.size());
+            List<Booking> legsToPersist = new ArrayList<>(builds.size());
             for (int i = 0; i < builds.size(); i++) {
                 LegBuild b = builds.get(i);
-                Booking booking = Booking.builder()
+                legsToPersist.add(Booking.builder()
                         .itinerary(itinerary)
                         .legOrder(i)
                         .flight(b.flight)
                         .seat(b.seatRef)
                         .finalPrice(b.quote.finalPrice())
-                        .build();
-                persistedLegs.add(bookingRepository.save(booking));
+                        .build());
             }
+            List<Booking> persistedLegs = bookingRepository.saveAll(legsToPersist);
             itinerary.setLegs(persistedLegs);
 
             log.info("Reserved itineraryId={} legs={} userId={} totalPrice={} ttlMinutes={}",
@@ -309,10 +372,14 @@ public class BookingService {
             case RESERVED -> { /* fall through */ }
         }
 
+        List<Booking> legs = itinerary.getLegs();
+        for (Booking leg : legs) {
+            assertFlightNotDeparted(leg.getFlight());
+        }
+
         // Every leg's Redis lock is the trust anchor. If any has
         // expired or been recycled, refuse BEFORE charging so the
         // "charged but no seat" race is structurally impossible.
-        List<Booking> legs = itinerary.getLegs();
         for (Booking leg : legs) {
             if (!seatLockService.isHeldBy(leg.getFlight().getId(), leg.getSeat().getId(), idempotencyKey)) {
                 log.warn("Confirm rejected: itineraryId={} lock lost on flightId={} seatId={}",
@@ -327,19 +394,16 @@ public class BookingService {
         Payment payment = paymentService.charge(
                 itinerary, itinerary.getFinalPrice(), req.paymentMethod(), idempotencyKey);
 
-        // INSERT flight_seats for every leg. UNIQUE(flight_id,
-        // seat_id) is the DB-side last-line defence; with the locks
-        // still ours we shouldn't reach any of these lines if a
-        // concurrent confirm has already inserted a row.
         Instant now = Instant.now();
+        List<FlightSeat> flightSeats = new ArrayList<>(legs.size());
         for (Booking leg : legs) {
-            FlightSeat fs = FlightSeat.builder()
+            flightSeats.add(FlightSeat.builder()
                     .flight(leg.getFlight())
                     .seat(leg.getSeat())
                     .bookedAt(now)
-                    .build();
-            flightSeatRepository.saveAndFlush(fs);
+                    .build());
         }
+        flightSeatRepository.saveAllAndFlush(flightSeats);
 
         itinerary.setStatus(BookingStatus.CONFIRMED);
         itinerary.setPayment(payment);
@@ -444,11 +508,15 @@ public class BookingService {
 
         List<Booking> legs = itinerary.getLegs();
 
-        // Delete every leg's flight_seats row.
         for (Booking leg : legs) {
-            flightSeatRepository.deleteByFlight_IdAndSeat_Id(
-                    leg.getFlight().getId(), leg.getSeat().getId());
+            assertFlightNotDeparted(leg.getFlight());
         }
+
+        // Delete every leg's flight_seats row in ONE query — the
+        // repository method fires a correlated EXISTS subquery
+        // against Booking so no tuple-IN parameter binding is
+        // needed. Replaces what used to be N sequential DELETEs.
+        flightSeatRepository.deleteAllByItinerary_Id(itinerary.getId());
 
         itinerary.setStatus(BookingStatus.CANCELLED);
         itinerary.setCancelledAt(Instant.now());
@@ -481,10 +549,25 @@ public class BookingService {
 
     // ---- Read ----------------------------------------------------------
 
+    /**
+     * Read-only itinerary view — same ownership check as
+     * {@link #confirm} and {@link #cancel}. A caller who isn't the
+     * itinerary's owner gets the intentionally-masked "not found for
+     * this user" 409 instead of a distinct "forbidden" so an
+     * attacker enumerating itinerary IDs can't tell the id exists
+     * but belongs to someone else.
+     */
     @Transactional(readOnly = true)
-    public BookingItineraryDto getItinerary(Long itineraryId) {
+    public BookingItineraryDto getItinerary(Long itineraryId, Long callerUserId) {
         Itinerary itinerary = itineraryRepository.findByIdWithGraph(itineraryId)
                 .orElseThrow(() -> new ResourceNotFoundException("Itinerary not found: " + itineraryId));
+
+        if (!Objects.equals(itinerary.getUser().getId(), callerUserId)) {
+            log.warn("View rejected: itinerary owner={} but caller={}",
+                    itinerary.getUser().getId(), callerUserId);
+            throw new InvalidBookingStateException("Reservation not found for this user");
+        }
+
         return toDto(itinerary, null, null);
     }
 
@@ -532,6 +615,71 @@ public class BookingService {
             }
         }
         return true;
+    }
+
+    /**
+     * Multi-leg physical + product sanity for a caller-supplied
+     * itinerary. Runs on the reserved shape before any lock is
+     * acquired, so an invalid request never holds a seat even
+     * briefly. Skipped for single-leg itineraries.
+     *
+     * <p>Every adjacent pair {@code (leg i, leg i+1)} must satisfy:</p>
+     * <ul>
+     *   <li><b>Connectivity</b>: destination of leg {@code i} equals
+     *       source of leg {@code i+1}. Otherwise the caller has
+     *       hand-stitched two disjoint trips into one row.</li>
+     *   <li><b>Chronology</b>: leg {@code i+1} departs at or after
+     *       leg {@code i} lands (strict {@link Duration#isNegative}
+     *       check). Reversed order is nonsense, not a policy call.</li>
+     *   <li><b>Layover in {@code [minLayoverMinutes, maxLayoverHours]}</b>:
+     *       {@code min} is a physics constraint (real airports can't
+     *       turn a passenger over in 15 minutes); {@code max} is the
+     *       same "beyond this it's really two trips" bound the
+     *       search strategy uses. Enforcing {@code max} here keeps
+     *       reserve's accepted shape equal to what search will ever
+     *       return — the domain-model bundling of an itinerary (one
+     *       payment, one cancel, one status, one refund) only makes
+     *       sense inside that window.</li>
+     * </ul>
+     *
+     * <p>A caller who deliberately wants a 24-hour stopover is not
+     * blocked from taking both flights — they can book them as two
+     * separate itineraries, which is actually the cleaner shape:
+     * independent refunds, independent cancels, independent
+     * airline-cancellation handling.</p>
+     */
+    private void assertLegsFormValidItinerary(List<Flight> flightsInCallerOrder) {
+        if (flightsInCallerOrder.size() < 2) return;
+        Duration minLayover = Duration.ofMinutes(minLayoverMinutes);
+        Duration maxLayover = Duration.ofHours(maxLayoverHours);
+        for (int i = 0; i < flightsInCallerOrder.size() - 1; i++) {
+            Flight curr = flightsInCallerOrder.get(i);
+            Flight next = flightsInCallerOrder.get(i + 1);
+            if (!Objects.equals(curr.getDestination(), next.getSource())) {
+                throw new InvalidBookingStateException(
+                        "Leg " + (i + 1) + " does not connect: leg " + i
+                                + " lands at " + curr.getDestination()
+                                + " but leg " + (i + 1) + " departs from " + next.getSource());
+            }
+            Duration gap = Duration.between(curr.getEndTime(), next.getStartTime());
+            if (gap.isNegative()) {
+                throw new InvalidBookingStateException(
+                        "Leg " + (i + 1) + " departs (" + next.getStartTime()
+                                + ") before leg " + i + " lands (" + curr.getEndTime() + ")");
+            }
+            if (gap.compareTo(minLayover) < 0) {
+                throw new InvalidBookingStateException(
+                        "Layover between leg " + i + " and leg " + (i + 1) + " is "
+                                + gap.toMinutes() + " min; minimum is "
+                                + minLayover.toMinutes() + " min");
+            }
+            if (gap.compareTo(maxLayover) > 0) {
+                throw new InvalidBookingStateException(
+                        "Layover between leg " + i + " and leg " + (i + 1) + " is "
+                                + gap.toHours() + " h; maximum is "
+                                + maxLayover.toHours() + " h — book as separate itineraries");
+            }
+        }
     }
 
     /**

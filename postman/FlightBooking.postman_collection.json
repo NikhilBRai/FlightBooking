@@ -321,7 +321,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"paymentMethod\": \"stripe-card-tok_visa\"\n}"
+              "raw": "{\n  \"paymentMethod\": \"CARD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/itinerary/{{itineraryId}}/confirm",
@@ -353,7 +353,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"paymentMethod\": \"stripe-card-tok_visa\"\n}"
+              "raw": "{\n  \"paymentMethod\": \"CARD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/itinerary/{{itineraryId}}/confirm",
@@ -724,7 +724,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"paymentMethod\": \"stripe-card-tok_visa\"\n}"
+              "raw": "{\n  \"paymentMethod\": \"CARD\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/itinerary/{{itineraryId}}/confirm",
@@ -734,11 +734,25 @@
           }
         },
         {
-          "name": "Waitlist — active-booking owner tries to join (409)",
+          "name": "Waitlist — active-booking owner CAN still join (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Policy is symmetric with reserve: since one user can hold",
+                  "// multiple seats on the same flight (family/group travel),",
+                  "// they can also wait for another seat on it.",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
-              { "key": "X-User-Id", "value": "{{userId}}", "description": "Alice, who already has a confirmed leg on {{flightId}}" }
+              { "key": "X-User-Id", "value": "{{userId}}", "description": "Alice, who already has a confirmed leg on {{flightId}} — allowed to join anyway" }
             ],
             "url": {
               "raw": "{{baseUrl}}/flights/{{flightId}}/waitlist",

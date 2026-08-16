@@ -2,6 +2,7 @@ package com.flightbooking.service;
 
 import com.flightbooking.domain.entity.Itinerary;
 import com.flightbooking.domain.entity.Payment;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.domain.enums.PaymentStatus;
 import com.flightbooking.domain.enums.PaymentType;
 import com.flightbooking.exception.PaymentFailedException;
@@ -53,7 +54,7 @@ class PaymentServiceTest {
         });
 
         Itinerary itinerary = itineraryRef(42L);
-        Payment out = svc.charge(itinerary, new BigDecimal("500.00"), "card", "k1");
+        Payment out = svc.charge(itinerary, new BigDecimal("500.00"), PaymentMethod.CARD, "k1");
 
         ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
         verify(paymentRepository).save(captor.capture());
@@ -65,7 +66,7 @@ class PaymentServiceTest {
         assertThat(persisted.getType()).isEqualTo(PaymentType.CHARGE);
         assertThat(persisted.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(persisted.getAmount()).isEqualByComparingTo("500.00");
-        assertThat(persisted.getPaymentMethod()).isEqualTo("card");
+        assertThat(persisted.getPaymentMethod()).isEqualTo(PaymentMethod.CARD);
         assertThat(persisted.getTransactionId()).startsWith("txn_");
         assertThat(persisted.getCreatedAt()).isNotNull();
     }
@@ -74,11 +75,11 @@ class PaymentServiceTest {
     void charge_isIdempotentOnDuplicateKey_returnsExistingWithoutInsert() {
         Payment existing = Payment.builder().id(7L).idempotencyKey("k1")
                 .type(PaymentType.CHARGE).status(PaymentStatus.SUCCESS)
-                .amount(new BigDecimal("500")).paymentMethod("card")
+                .amount(new BigDecimal("500")).paymentMethod(PaymentMethod.CARD)
                 .itinerary(itineraryRef(42L)).transactionId("txn_pre").build();
         when(paymentRepository.findByIdempotencyKey("k1")).thenReturn(Optional.of(existing));
 
-        Payment out = svc.charge(itineraryRef(42L), new BigDecimal("500.00"), "card", "k1");
+        Payment out = svc.charge(itineraryRef(42L), new BigDecimal("500.00"), PaymentMethod.CARD, "k1");
 
         assertThat(out).isSameAs(existing);
         verify(paymentRepository, never()).save(any(Payment.class));
@@ -89,8 +90,8 @@ class PaymentServiceTest {
         when(paymentRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
         when(paymentRepository.save(any(Payment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Payment p1 = svc.charge(itineraryRef(1L), BigDecimal.TEN, "m", "k-a");
-        Payment p2 = svc.charge(itineraryRef(1L), BigDecimal.TEN, "m", "k-b");
+        Payment p1 = svc.charge(itineraryRef(1L), BigDecimal.TEN, PaymentMethod.CARD, "k-a");
+        Payment p2 = svc.charge(itineraryRef(1L), BigDecimal.TEN, PaymentMethod.CARD, "k-b");
 
         assertThat(p1.getTransactionId()).isNotEqualTo(p2.getTransactionId());
     }
@@ -102,7 +103,7 @@ class PaymentServiceTest {
         Itinerary itinerary = itineraryRef(42L);
         Payment original = Payment.builder().id(11L).itinerary(itinerary)
                 .type(PaymentType.CHARGE).status(PaymentStatus.SUCCESS)
-                .amount(new BigDecimal("500.00")).paymentMethod("upi")
+                .amount(new BigDecimal("500.00")).paymentMethod(PaymentMethod.UPI)
                 .idempotencyKey("charge-key").transactionId("txn_orig").build();
         when(paymentRepository.findByIdempotencyKey("refund:cancel-1")).thenReturn(Optional.empty());
         when(paymentRepository.findById(11L)).thenReturn(Optional.of(original));
@@ -122,7 +123,7 @@ class PaymentServiceTest {
         assertThat(refund.getType()).isEqualTo(PaymentType.REFUND);
         assertThat(refund.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(refund.getAmount()).isEqualByComparingTo("500.00");
-        assertThat(refund.getPaymentMethod()).isEqualTo("upi");
+        assertThat(refund.getPaymentMethod()).isEqualTo(PaymentMethod.UPI);
         assertThat(refund.getItinerary()).isSameAs(itinerary);
         assertThat(refund.getIdempotencyKey()).isEqualTo("refund:cancel-1");
         assertThat(refund.getTransactionId()).startsWith("rfnd_");
@@ -133,7 +134,7 @@ class PaymentServiceTest {
         Payment existingRefund = Payment.builder().id(88L).itinerary(itineraryRef(42L))
                 .type(PaymentType.REFUND).idempotencyKey("refund:c-1")
                 .status(PaymentStatus.SUCCESS).amount(new BigDecimal("500"))
-                .paymentMethod("card").transactionId("rfnd_pre").build();
+                .paymentMethod(PaymentMethod.CARD).transactionId("rfnd_pre").build();
         when(paymentRepository.findByIdempotencyKey("refund:c-1")).thenReturn(Optional.of(existingRefund));
 
         Payment out = svc.refund(11L, "refund:c-1");

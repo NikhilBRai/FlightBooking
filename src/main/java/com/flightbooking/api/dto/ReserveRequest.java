@@ -2,6 +2,7 @@ package com.flightbooking.api.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
 
@@ -21,6 +22,17 @@ import java.util.List;
  */
 public record ReserveRequest(
         @NotEmpty(message = "legs must contain at least one entry")
+        @Size(max = MAX_LEGS,
+                message = "itinerary cannot exceed " + MAX_LEGS + " legs")
         @Valid
         List<LegRequest> legs
-) {}
+) {
+    /**
+     * Real-world itineraries are almost always 1–4 legs (a round-trip
+     * with one stop each way is 4). We cap at 8 to give plenty of
+     * headroom for pathological cases while still refusing obviously
+     * absurd requests (e.g. a fuzzed 500-leg body). If your business
+     * ever legitimately sells 9-leg itineraries, bump this here.
+     */
+    public static final int MAX_LEGS = 8;
+}

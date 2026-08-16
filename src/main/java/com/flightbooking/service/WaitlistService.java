@@ -3,6 +3,7 @@ package com.flightbooking.service;
 import com.flightbooking.domain.entity.Flight;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.entity.WaitlistEntry;
+import com.flightbooking.exception.InvalidBookingStateException;
 import com.flightbooking.exception.ResourceNotFoundException;
 import com.flightbooking.repository.FlightRepository;
 import com.flightbooking.repository.UserRepository;
@@ -54,6 +55,17 @@ public class WaitlistService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         Flight flight = flightRepository.findById(flightId)
                 .orElseThrow(() -> new ResourceNotFoundException("Flight not found: " + flightId));
+
+        // Waitlist notifications are triggered by cancellations of
+        // OTHER users' bookings on this flight — after departure,
+        // no cancel will ever fire (departed itineraries can't be
+        // cancelled) so the waitlist entry is dead weight. Refuse
+        // early rather than let the row sit there silently useless.
+        if (!flight.getStartTime().isAfter(Instant.now())) {
+            throw new InvalidBookingStateException(
+                    "Flight " + flightId + " departed at " + flight.getStartTime()
+                            + "; cannot join waitlist");
+        }
 
         Optional<WaitlistEntry> existing =
                 waitlistRepository.findByFlight_IdAndUser_Id(flightId, userId);

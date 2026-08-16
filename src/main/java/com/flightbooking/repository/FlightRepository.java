@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -145,4 +146,26 @@ public interface FlightRepository extends JpaRepository<Flight, Long> {
          WHERE f.id = :id
         """)
     Optional<Flight> findByIdWithFlightModel(@Param("id") Long id);
+
+    /**
+     * Bulk version of {@link #findByIdWithFlightModel} — one round-trip
+     * for the whole set with the {@code flightModel} eagerly joined.
+     * Used by {@link com.flightbooking.service.BookingService#reserve}
+     * to load every leg's flight in a single {@code IN (:ids)} query
+     * instead of N sequential lookups (N-leg latency → 1-leg latency).
+     *
+     * <p>Missing IDs are simply absent from the returned list — no
+     * exception is thrown here; the caller is responsible for
+     * cross-checking against the requested set and raising a
+     * {@code ResourceNotFoundException} with the specific missing id
+     * so the client sees a precise 404, not a vague "some flight
+     * missing".</p>
+     */
+    @Query("""
+        SELECT f
+          FROM Flight f
+          JOIN FETCH f.flightModel
+         WHERE f.id IN :ids
+        """)
+    List<Flight> findAllByIdInWithFlightModel(@Param("ids") Collection<Long> ids);
 }

@@ -7,6 +7,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.flightbooking.api.ItineraryController;
 import com.flightbooking.api.dto.BookingItineraryDto;
 import com.flightbooking.api.dto.ConfirmRequest;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.api.dto.LegRequest;
 import com.flightbooking.api.dto.ReserveRequest;
 import com.flightbooking.domain.entity.Flight;
@@ -196,7 +197,7 @@ class WaitlistIT extends AbstractIntegrationTest {
                         .header(ItineraryController.USER_ID_HEADER, u.getId())
                         .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, idem)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(mapper.writeValueAsString(new ConfirmRequest("card"))))
+                        .content(mapper.writeValueAsString(new ConfirmRequest(PaymentMethod.CARD))))
                 .andExpect(status().isOk());
         return resp.itineraryId();
     }

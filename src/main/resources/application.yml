@@ -50,6 +50,20 @@ spring:
         format_sql: true
         jdbc:
           time_zone: UTC
+          # Hibernate JDBC batching — turns the saveAll / saveAllAndFlush
+          # calls in BookingService (reserve inserts N Booking rows,
+          # confirm inserts N flight_seats) from N sequential INSERTs
+          # into one JDBC batch. Sized larger than the leg cap
+          # (ReserveRequest.MAX_LEGS = 8) so a full itinerary always
+          # fits in one batch. Bump if that cap ever grows.
+          batch_size: 20
+        # Let Hibernate reorder INSERT / UPDATE statements by entity
+        # type before flushing so batches of the same entity land
+        # together — needed for batch_size to actually kick in when
+        # we save an Itinerary followed by multiple Booking rows
+        # in the same transaction.
+        order_inserts: true
+        order_updates: true
 
   # Used only when app.seat-lock.backend=redis. Ignored otherwise, so
   # having Redis absent while running with the in-memory backend is fine.

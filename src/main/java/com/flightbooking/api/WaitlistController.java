@@ -35,10 +35,14 @@ public class WaitlistController {
      *       (idempotent); DTO is identical in both cases.</li>
      *   <li>{@code 400} — missing {@code X-User-Id} header.</li>
      *   <li>{@code 404} — no flight with that id, or unknown user.</li>
-     *   <li>{@code 409} — the user already has a
-     *       {@code RESERVED}/{@code CONFIRMED} booking on this
-     *       flight, so there's nothing to wait for.</li>
+     *   <li>{@code 409} — flight has already departed
+     *       (nothing left to wait for).</li>
      * </ul>
+     *
+     * <p>Holding a seat on this flight is <em>not</em> a disqualifier
+     * — since reserve permits one user to hold multiple seats on the
+     * same flight (family / group travel), the waitlist is symmetric
+     * and lets them wait for another seat too.</p>
      */
     @PostMapping
     public WaitlistEntryDto join(@PathVariable Long flightId,

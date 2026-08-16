@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.flightbooking.api.ItineraryController;
 import com.flightbooking.api.dto.BookingItineraryDto;
 import com.flightbooking.api.dto.ConfirmRequest;
+import com.flightbooking.domain.enums.PaymentMethod;
 import com.flightbooking.api.dto.LegRequest;
 import com.flightbooking.api.dto.ReserveRequest;
 import com.flightbooking.domain.entity.Booking;
@@ -108,7 +109,7 @@ class BookingIT extends AbstractIntegrationTest {
                         .header(ItineraryController.USER_ID_HEADER, userId)
                         .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, idem)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(mapper.writeValueAsString(new ConfirmRequest("card"))))
+                        .content(mapper.writeValueAsString(new ConfirmRequest(PaymentMethod.CARD))))
                 .andExpect(status().isOk())
                 .andReturn();
         return mapper.readValue(res.getResponse().getContentAsString(),
@@ -326,7 +327,7 @@ class BookingIT extends AbstractIntegrationTest {
                         .header(ItineraryController.USER_ID_HEADER, bob.getId())
                         .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, idem)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(mapper.writeValueAsString(new ConfirmRequest("card"))))
+                        .content(mapper.writeValueAsString(new ConfirmRequest(PaymentMethod.CARD))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message")
                         .value(org.hamcrest.Matchers.containsString("not found for this user")));
@@ -354,7 +355,7 @@ class BookingIT extends AbstractIntegrationTest {
                         .header(ItineraryController.USER_ID_HEADER, alice.getId())
                         .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, "different")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(mapper.writeValueAsString(new ConfirmRequest("card"))))
+                        .content(mapper.writeValueAsString(new ConfirmRequest(PaymentMethod.CARD))))
                 .andExpect(status().isConflict());
     }
 
@@ -433,11 +434,12 @@ class BookingIT extends AbstractIntegrationTest {
     // ---- view ---------------------------------------------------------
 
     @Test
-    void viewItinerary_returnsDto() throws Exception {
+    void viewItinerary_returnsDtoForOwner() throws Exception {
         String idem = UUID.randomUUID().toString();
         BookingItineraryDto rr = reserveSingle(alice.getId(), idem, leg1Flight.getId(), seatA.getId());
 
-        mvc.perform(get("/itinerary/" + rr.itineraryId()))
+        mvc.perform(get("/itinerary/" + rr.itineraryId())
+                        .header(ItineraryController.USER_ID_HEADER, alice.getId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.itineraryId").value(rr.itineraryId()))
                 .andExpect(jsonPath("$.status").value("RESERVED"))
@@ -447,8 +449,33 @@ class BookingIT extends AbstractIntegrationTest {
 
     @Test
     void viewItinerary_unknownIs404() throws Exception {
-        mvc.perform(get("/itinerary/99999"))
+        mvc.perform(get("/itinerary/99999")
+                        .header(ItineraryController.USER_ID_HEADER, alice.getId()))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("view refuses non-owner with masked 409 (IDOR guard)")
+    void viewItinerary_nonOwnerGets409NotAForbidden() throws Exception {
+        String idem = UUID.randomUUID().toString();
+        BookingItineraryDto rr = reserveSingle(alice.getId(), idem, leg1Flight.getId(), seatA.getId());
+
+        // bob knows / guesses alice's itineraryId — must NOT be able
+        // to read her passenger name, seat, price, etc.
+        mvc.perform(get("/itinerary/" + rr.itineraryId())
+                        .header(ItineraryController.USER_ID_HEADER, bob.getId()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("not found for this user")));
+    }
+
+    @Test
+    void viewItinerary_missingUserHeaderIs400() throws Exception {
+        String idem = UUID.randomUUID().toString();
+        BookingItineraryDto rr = reserveSingle(alice.getId(), idem, leg1Flight.getId(), seatA.getId());
+
+        mvc.perform(get("/itinerary/" + rr.itineraryId()))
+                .andExpect(status().isBadRequest());
     }
 
     // ---- concurrent race ---------------------------------------------
@@ -572,5 +599,56 @@ class BookingIT extends AbstractIntegrationTest {
                     .as("round %d: the loser must see 409, not double-loss", i)
                     .isEqualTo(1);
         }
+    }
+
+    // ---- Fix 4 / Fix 5 request-validation regressions ----------------
+
+    @Test
+    @DisplayName("reserve rejects a body with more than MAX_LEGS legs (Fix 5)")
+    void reserve_rejectsBodyExceedingMaxLegs() throws Exception {
+        // 9 legs — 1 above the cap. The exact leg content doesn't
+        // matter; @Size fires before controller / service code.
+        List<LegRequest> tooMany = java.util.stream.IntStream.range(0, 9)
+                .mapToObj(i -> new LegRequest(leg1Flight.getId(), seatA.getId()))
+                .toList();
+
+        mvc.perform(post("/itinerary/reserve")
+                        .header(ItineraryController.USER_ID_HEADER, alice.getId())
+                        .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(new ReserveRequest(tooMany))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("confirm rejects an unknown paymentMethod at JSON binding time (Fix 4)")
+    void confirm_rejectsUnknownPaymentMethod() throws Exception {
+        String idem = UUID.randomUUID().toString();
+        BookingItineraryDto rr = reserveSingle(alice.getId(), idem, leg1Flight.getId(), seatA.getId());
+
+        // Hand-craft JSON with a value not in PaymentMethod.
+        // Jackson must fail deserialization → 400 without ever
+        // reaching PaymentService.
+        String badJson = "{\"paymentMethod\":\"MONOPOLY_MONEY\"}";
+        mvc.perform(post("/itinerary/" + rr.itineraryId() + "/confirm")
+                        .header(ItineraryController.USER_ID_HEADER, alice.getId())
+                        .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, idem)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(badJson))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("confirm rejects a null paymentMethod as 400 (Fix 4)")
+    void confirm_rejectsNullPaymentMethod() throws Exception {
+        String idem = UUID.randomUUID().toString();
+        BookingItineraryDto rr = reserveSingle(alice.getId(), idem, leg1Flight.getId(), seatA.getId());
+
+        mvc.perform(post("/itinerary/" + rr.itineraryId() + "/confirm")
+                        .header(ItineraryController.USER_ID_HEADER, alice.getId())
+                        .header(ItineraryController.IDEMPOTENCY_KEY_HEADER, idem)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentMethod\":null}"))
+                .andExpect(status().isBadRequest());
     }
 }

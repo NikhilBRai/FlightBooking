@@ -4,6 +4,7 @@ import com.flightbooking.domain.entity.Flight;
 import com.flightbooking.domain.entity.FlightModel;
 import com.flightbooking.domain.entity.User;
 import com.flightbooking.domain.entity.WaitlistEntry;
+import com.flightbooking.exception.InvalidBookingStateException;
 import com.flightbooking.exception.ResourceNotFoundException;
 import com.flightbooking.repository.FlightRepository;
 import com.flightbooking.repository.UserRepository;
@@ -137,6 +138,30 @@ class WaitlistServiceTest {
         assertThatExceptionOfType(ResourceNotFoundException.class)
                 .isThrownBy(() -> svc.addToWaitlist(1L, 10L))
                 .withMessageContaining("Flight");
+    }
+
+    @Test
+    void addToWaitlist_refusesJoinAfterFlightDeparted() {
+        // Waitlist notifications fire on OTHER users' cancellations
+        // — cancel is itself refused for departed flights (see
+        // BookingServiceTest.Cancel), so a waitlist entry against
+        // a departed flight would never trigger. Refuse the join
+        // early rather than silently persist a dead row.
+        Flight departed = Flight.builder().id(11L)
+                .flightModel(flight.getFlightModel())
+                .source("BLR").destination("BOM")
+                .cost(new BigDecimal("1000"))
+                .startTime(Instant.now().minusSeconds(60))
+                .endTime(Instant.now().plusSeconds(60))
+                .build();
+        when(userRepository.findById(1L)).thenReturn(Optional.of(alice));
+        when(flightRepository.findById(11L)).thenReturn(Optional.of(departed));
+
+        assertThatExceptionOfType(InvalidBookingStateException.class)
+                .isThrownBy(() -> svc.addToWaitlist(1L, 11L))
+                .withMessageContaining("departed");
+
+        verify(waitlistRepository, never()).save(any(WaitlistEntry.class));
     }
 
     // ---- removeFromWaitlist ------------------------------------------
